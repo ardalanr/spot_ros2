@@ -1,0 +1,19 @@
+teleop_twist_joy_node:
+  ros__parameters:
+    axis_linear:
+      x: 1          # Left stick Y → forward/back
+      y: 0          # Left stick X → strafe
+    scale_linear:
+      x: 1.0
+      y: 1.0
+    scale_linear_turbo:
+      x: 1.5
+      y: 1.5
+
+    axis_angular:
+      yaw: 3        # Right stick X → rotate
+    scale_angular:
+      yaw: 1.0
+
+    enable_button: 4          # LB — hold to enable motion (deadman switch)
+    enable_turbo_button: 5    # RB — hold for turbo (optional)
