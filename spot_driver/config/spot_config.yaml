@@ -5,7 +5,7 @@
     # Spot Login Information
     username: "admin"
     password: "as2p0scnbi80"
-    hostname: "10.0.0.3"
+    hostname: "192.168.50.3"
 
     # Status Updates from Spot
     metrics_rate: 0.04
