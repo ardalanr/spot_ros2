@@ -49,6 +49,7 @@ class RclcppParameterInterface : public ParameterInterfaceBase {
   [[nodiscard]] std::optional<double> getLeaseRate() const override;
   [[nodiscard]] double getRobotStateRate() const override;
   [[nodiscard]] double getImageRate() const override;
+  [[nodiscard]] double getLocalGridRate() const override;
 
  private:
   std::shared_ptr<rclcpp::Node> node_;

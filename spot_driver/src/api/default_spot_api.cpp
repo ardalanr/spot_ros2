@@ -1,11 +1,13 @@
 // Copyright (c) 2023 Robotics and AI Institute LLC dba RAI Institute. All rights reserved.
 
 #include <bosdyn/client/gripper_camera_param/gripper_camera_param_client.h>
+#include <bosdyn/client/local_grid/local_grid_client.h>
 #include <bosdyn/client/world_objects/world_object_client.h>
 #include <memory>
 #include <spot_driver/api/default_image_client.hpp>
 #include <spot_driver/api/default_kinematic_api.hpp>
 #include <spot_driver/api/default_lease_client.hpp>
+#include <spot_driver/api/default_local_grid_client.hpp>
 #include <spot_driver/api/default_spot_api.hpp>
 #include <spot_driver/api/default_state_client.hpp>
 #include <spot_driver/api/default_time_sync_api.hpp>
@@ -118,6 +120,15 @@ tl::expected<void, std::string> DefaultSpotApi::authenticate(const std::string& 
   }
   world_object_client_interface_ = std::make_shared<DefaultWorldObjectClient>(world_object_client_result.response);
 
+  // Local Grid API.
+  const auto local_grid_client_result = robot_->EnsureServiceClient<::bosdyn::client::LocalGridClient>(
+      ::bosdyn::client::LocalGridClient::GetDefaultServiceName());
+  if (!local_grid_client_result.status) {
+    return tl::make_unexpected("Failed to create local grid client: " +
+                               local_grid_client_result.status.DebugString());
+  }
+  local_grid_client_interface_ = std::make_shared<DefaultLocalGridClient>(local_grid_client_result.response);
+
   return {};
 }
 
@@ -158,6 +169,10 @@ std::shared_ptr<TimeSyncApi> DefaultSpotApi::timeSyncInterface() const {
 
 std::shared_ptr<WorldObjectClientInterface> DefaultSpotApi::worldObjectClientInterface() const {
   return world_object_client_interface_;
+}
+
+std::shared_ptr<LocalGridClientInterface> DefaultSpotApi::localGridClientInterface() const {
+  return local_grid_client_interface_;
 }
 
 }  // namespace spot_ros2
