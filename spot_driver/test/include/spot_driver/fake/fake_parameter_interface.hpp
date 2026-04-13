@@ -55,6 +55,8 @@ class FakeParameterInterface : public ParameterInterfaceBase {
 
   double getImageRate() const override { return kDefaultImageRate; }
 
+  double getLocalGridRate() const override { return kDefaultLocalGridRate; }
+
   std::set<spot_ros2::SpotCamera> getDefaultCamerasUsed(const bool has_arm, const bool gripperless) const override {
     const auto kDefaultCamerasUsed = (has_arm && !gripperless) ? kCamerasWithHand : kCamerasWithoutHand;
     std::set<spot_ros2::SpotCamera> spot_cameras_used;

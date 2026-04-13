@@ -21,6 +21,7 @@ set(THIS_PACKAGE_INCLUDE_ROS_DEPENDS
   bosdyn_spot_api_msgs
   cv_bridge
   geometry_msgs
+  grid_map_msgs
   image_transport
   message_filters
   OpenCV
@@ -53,6 +54,7 @@ add_library(spot_api
   src/api/default_kinematic_api.cpp
   src/api/default_image_client.cpp
   src/api/default_lease_client.cpp
+  src/api/default_local_grid_client.cpp
   src/api/default_spot_api.cpp
   src/api/default_state_client.cpp
   src/api/default_time_sync_api.cpp
@@ -63,6 +65,7 @@ add_library(spot_api
   src/conversions/decompress_images.cpp
   src/conversions/geometry.cpp
   src/conversions/kinematic_conversions.cpp
+  src/conversions/local_grid.cpp
   src/conversions/robot_state.cpp
   src/conversions/time.cpp
   src/images/spot_image_publisher.cpp
@@ -81,6 +84,9 @@ add_library(spot_api
   src/kinematic/kinematic_node.cpp
   src/kinematic/kinematic_service.cpp
   src/kinematic/kinematic_middleware_handle.cpp
+  src/local_grid/local_grid_middleware_handle.cpp
+  src/local_grid/local_grid_publisher.cpp
+  src/local_grid/local_grid_publisher_node.cpp
   src/object_sync/object_synchronizer.cpp
   src/object_sync/object_synchronizer_node.cpp
   src/robot_state/state_middleware_handle.cpp
@@ -151,6 +157,34 @@ rclcpp_components_register_node(
   state_publisher_component
   PLUGIN "spot_ros2::StatePublisherNode"
   EXECUTABLE state_publisher_node_component)
+
+###
+# Spot local grid publisher
+###
+
+# Create executable to allow running LocalGridPublisherNode directly as a ROS 2 node
+add_executable(local_grid_publisher_node src/local_grid/local_grid_publisher_node_main.cpp)
+target_link_libraries(local_grid_publisher_node PUBLIC spot_api)
+target_include_directories(local_grid_publisher_node
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+# Register a composable node to allow loading LocalGridPublisherNode in a component container
+add_library(local_grid_publisher_component SHARED src/local_grid/local_grid_publisher_component.cpp)
+target_include_directories(local_grid_publisher_component
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(local_grid_publisher_component PUBLIC spot_api)
+ament_target_dependencies(local_grid_publisher_component PUBLIC rclcpp_components)
+
+rclcpp_components_register_node(
+  local_grid_publisher_component
+  PLUGIN "spot_ros2::LocalGridPublisherNode"
+  EXECUTABLE local_grid_publisher_node_component)
 
 ###
 # Spot lease manager
@@ -262,6 +296,7 @@ install(
   TARGETS
     image_stitcher
     lease_manager_component
+    local_grid_publisher_component
     spot_api
     spot_image_publisher_component
     spot_inverse_kinematics_component
@@ -275,10 +310,12 @@ install(
 
 # Install Executables
 install(
-  TARGETS 
+  TARGETS
     image_stitcher_node
     lease_manager_node
     lease_manager_node_component
+    local_grid_publisher_node
+    local_grid_publisher_node_component
     object_synchronizer_node
     spot_image_publisher_node
     spot_image_publisher_node_component
