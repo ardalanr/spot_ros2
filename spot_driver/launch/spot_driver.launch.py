@@ -149,6 +149,15 @@ def launch_setup(context: LaunchContext, ld: LaunchDescription) -> None:
     )
     ld.add_action(spot_robot_state_publisher)
 
+    spot_local_grid_publisher_node = Node(
+        package="spot_driver",
+        executable="local_grid_publisher_node",
+        output="screen",
+        parameters=[configured_params],
+        namespace=spot_name,
+    )
+    ld.add_action(spot_local_grid_publisher_node)
+
     spot_alert_node = Node(
         package="spot_driver",
         executable="spot_alerts",
