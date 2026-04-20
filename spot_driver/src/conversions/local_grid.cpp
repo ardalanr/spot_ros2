@@ -41,7 +41,6 @@ Quatd quatMul(const Quatd& a, const Quatd& b) {
 
 // Rotate a 3D point by a unit quaternion: q * p * q^-1.
 Vec3d rotatePoint(const Quatd& q, const Vec3d& p) {
-  // Using the formula: v' = q * [0,v] * q_conj
   const Quatd pq{0.0, p.x, p.y, p.z};
   const Quatd qconj{q.w, -q.x, -q.y, -q.z};
   const Quatd result = quatMul(quatMul(q, pq), qconj);
@@ -50,54 +49,103 @@ Vec3d rotatePoint(const Quatd& q, const Vec3d& p) {
 
 struct SE3d {
   Vec3d t;  // translation
-  Quatd r;  // rotation
+  Quatd r;  // rotation (unit quaternion)
 };
 
 // Compose two SE3 transforms: T_A_C = T_A_B * T_B_C.
 SE3d composeSE3(const SE3d& T_AB, const SE3d& T_BC) {
-  const Vec3d t_AB_rotated = rotatePoint(T_AB.r, T_BC.t);
-  return {{T_AB.t.x + t_AB_rotated.x, T_AB.t.y + t_AB_rotated.y, T_AB.t.z + t_AB_rotated.z},
-          quatMul(T_AB.r, T_BC.r)};
+  const Vec3d rotated = rotatePoint(T_AB.r, T_BC.t);
+  return {{T_AB.t.x + rotated.x, T_AB.t.y + rotated.y, T_AB.t.z + rotated.z}, quatMul(T_AB.r, T_BC.r)};
 }
 
+// Inverse of an SE3 transform (valid only for unit-quaternion rotation).
+SE3d inverseSE3(const SE3d& T) {
+  const Quatd r_inv{T.r.w, -T.r.x, -T.r.y, -T.r.z};
+  const Vec3d t_inv = rotatePoint(r_inv, {-T.t.x, -T.t.y, -T.t.z});
+  return {t_inv, r_inv};
+}
+
+using EdgeMap = google::protobuf::Map<std::string, bosdyn::api::FrameTreeSnapshot_ParentEdge>;
+
+struct FramePath {
+  SE3d T_root_frame;   // transform: root → start_frame
+  std::string root_name;
+};
+
 /**
- * @brief Walk the FrameTreeSnapshot from `child_frame` up to "odom", composing SE3 transforms.
+ * @brief Walk from start_frame up to the tree root (the frame with an empty parent), accumulating
+ * T_root_start along the way.
  *
- * @param snapshot The FrameTreeSnapshot from the local grid response.
- * @param child_frame The starting (child) frame name.
- * @return SE3d transform T_odom_child, or identity if the path to odom cannot be found.
+ * In the Bosdyn local grid FrameTreeSnapshot the root is typically "body", with "odom" and "vision"
+ * as children of the root — not ancestors. Walking purely up the parent chain from
+ * terrain_local_grid_corner therefore never reaches "odom" directly.
  */
-SE3d computeOdomTChild(const bosdyn::api::FrameTreeSnapshot& snapshot, const std::string& child_frame) {
-  const auto& edge_map = snapshot.child_to_parent_edge_map();
+constexpr int kMaxDepth = 32;
 
-  // Accumulated transform: T_ancestor_child, starting as identity (T_child_child).
+std::optional<FramePath> walkToRoot(const EdgeMap& edge_map, const std::string& start_frame) {
   SE3d accumulated{{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0, 0.0}};
-  std::string current = child_frame;
+  std::string current = start_frame;
 
-  constexpr int kMaxDepth = 32;  // guard against malformed/cyclic trees
   for (int depth = 0; depth < kMaxDepth; ++depth) {
-    if (current == kOdomFrame) {
-      return accumulated;
-    }
     const auto it = edge_map.find(current);
     if (it == edge_map.end()) {
-      break;  // can't reach odom — return identity below
+      return std::nullopt;
     }
     const auto& edge = it->second;
+    if (edge.parent_frame_name().empty()) {
+      // current is the root
+      return FramePath{accumulated, current};
+    }
     if (!edge.has_parent_tform_child()) {
-      break;
+      return std::nullopt;
     }
     const auto& pose = edge.parent_tform_child();
     const SE3d T_parent_current{
         {pose.position().x(), pose.position().y(), pose.position().z()},
         {pose.rotation().w(), pose.rotation().x(), pose.rotation().y(), pose.rotation().z()}};
-    // T_parent_child = T_parent_current * T_current_child
     accumulated = composeSE3(T_parent_current, accumulated);
     current = edge.parent_frame_name();
   }
+  return std::nullopt;
+}
 
-  // Failed to reach odom; return identity so the message is at least published.
-  return {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0, 0.0}};
+/**
+ * @brief Compute T_target_child using two paths through the common tree root.
+ *
+ * The Bosdyn snapshot for local grids uses "body" as the root, with both "odom" and
+ * "terrain_local_grid_corner" as descendants (in different branches). To get T_odom_corner we:
+ *   1. Walk corner → root to get T_root_corner.
+ *   2. Walk odom → root to get T_root_odom.
+ *   3. T_odom_corner = inv(T_root_odom) * T_root_corner.
+ *
+ * @return {T_target_child, target_frame_name}. Falls back to root frame if target_frame is not
+ *         reachable. Returns nullopt if child_frame is not found at all.
+ */
+std::optional<std::pair<SE3d, std::string>> computeTargetTChild(
+    const bosdyn::api::FrameTreeSnapshot& snapshot, const std::string& child_frame,
+    const std::string& target_frame) {
+  const auto& edge_map = snapshot.child_to_parent_edge_map();
+
+  const auto child_path = walkToRoot(edge_map, child_frame);
+  if (!child_path) {
+    return std::nullopt;
+  }
+
+  // If target IS the root, we already have T_root_child = T_target_child.
+  if (child_path->root_name == target_frame) {
+    return std::make_pair(child_path->T_root_frame, target_frame);
+  }
+
+  // Walk from target up to root: gives T_root_target.
+  const auto target_path = walkToRoot(edge_map, target_frame);
+  if (!target_path || target_path->root_name != child_path->root_name) {
+    // target not reachable from the same root — fall back to root frame
+    return std::make_pair(child_path->T_root_frame, child_path->root_name);
+  }
+
+  // T_target_child = inv(T_root_target) * T_root_child
+  const SE3d T_target_child = composeSE3(inverseSE3(target_path->T_root_frame), child_path->T_root_frame);
+  return std::make_pair(T_target_child, target_frame);
 }
 
 /**
@@ -200,34 +248,45 @@ std::optional<grid_map_msgs::msg::GridMap> getTerrainMap(const bosdyn::api::Loca
   grid_map_msgs::msg::GridMap grid_map;
 
   // Compute the grid center in odom frame.
-  // frame_name_local_grid_data is at the grid's minimum (x,y) corner; the center is offset by
-  // half the grid extent in the +x and +y directions of the corner frame.
+  // frame_name_local_grid_data origin is at the grid corner (minimum x,y cell center).
+  // The center is offset by half the grid extent in the +x and +y directions of the corner frame.
   const double length_x = num_cells_x * cell_size;
   const double length_y = num_cells_y * cell_size;
 
-  const SE3d T_odom_corner =
-      computeOdomTChild(local_grid.transforms_snapshot(), local_grid.frame_name_local_grid_data());
+  // The Bosdyn snapshot for local grids uses "body" as the root, with "odom" and the corner frame
+  // in different branches. computeTargetTChild handles the two-path traversal through the root.
+  const auto transform_result = computeTargetTChild(local_grid.transforms_snapshot(),
+                                                    local_grid.frame_name_local_grid_data(), kOdomFrame);
+  if (!transform_result) {
+    return std::nullopt;
+  }
+
+  const auto& [T_target_corner, target_frame_name] = *transform_result;
 
   const Vec3d center_in_corner{length_x / 2.0, length_y / 2.0, 0.0};
-  const Vec3d center_rotated = rotatePoint(T_odom_corner.r, center_in_corner);
-  const Vec3d center_in_odom{T_odom_corner.t.x + center_rotated.x, T_odom_corner.t.y + center_rotated.y,
-                              T_odom_corner.t.z + center_rotated.z};
+  const Vec3d center_rotated = rotatePoint(T_target_corner.r, center_in_corner);
+  const Vec3d center_in_target{T_target_corner.t.x + center_rotated.x, T_target_corner.t.y + center_rotated.y,
+                                T_target_corner.t.z + center_rotated.z};
 
   // Header: frame and timestamp.
-  grid_map.header.frame_id = frame_prefix + kOdomFrame;
+  grid_map.header.frame_id = frame_prefix + target_frame_name;
   grid_map.header.stamp = robotTimeToLocalTime(local_grid.acquisition_time(), clock_skew);
 
-  // Info: resolution, map size, and pose of the map center in odom frame.
+  // Info: resolution, map size, and pose of the map center in the target frame.
   grid_map.info.resolution = cell_size;
   grid_map.info.length_x = length_x;
   grid_map.info.length_y = length_y;
-  grid_map.info.pose.position.x = center_in_odom.x;
-  grid_map.info.pose.position.y = center_in_odom.y;
-  grid_map.info.pose.position.z = center_in_odom.z;
-  grid_map.info.pose.orientation.w = T_odom_corner.r.w;
-  grid_map.info.pose.orientation.x = T_odom_corner.r.x;
-  grid_map.info.pose.orientation.y = T_odom_corner.r.y;
-  grid_map.info.pose.orientation.z = T_odom_corner.r.z;
+  grid_map.info.pose.position.x = center_in_target.x;
+  grid_map.info.pose.position.y = center_in_target.y;
+  grid_map.info.pose.position.z = center_in_target.z;
+  // grid_map.info.pose.orientation.w = T_target_corner.r.w;
+  // grid_map.info.pose.orientation.x = T_target_corner.r.x;
+  // grid_map.info.pose.orientation.y = T_target_corner.r.y;
+  // grid_map.info.pose.orientation.z = T_target_corner.r.z;
+  grid_map.info.pose.orientation.w = 1;
+  grid_map.info.pose.orientation.x = 0;
+  grid_map.info.pose.orientation.y = 0;
+  grid_map.info.pose.orientation.z = 0;
 
   // Layer metadata.
   grid_map.layers = {"elevation"};

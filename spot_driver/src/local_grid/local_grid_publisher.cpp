@@ -53,6 +53,19 @@ void LocalGridPublisher::timerCallback() {
       continue;
     }
 
+    // One-time diagnostic: log frame_name_local_grid_data and all frames in the transforms_snapshot.
+    if (!logged_snapshot_frames_) {
+      logged_snapshot_frames_ = true;
+      const auto& grid = local_grid_response.local_grid();
+      std::string msg = "frame_name_local_grid_data='" + grid.frame_name_local_grid_data() + "'. Snapshot frames: [";
+      const auto& edge_map = grid.transforms_snapshot().child_to_parent_edge_map();
+      for (const auto& kv : edge_map) {
+        msg += "'" + kv.first + "'->'" + kv.second.parent_frame_name() + "', ";
+      }
+      msg += "]";
+      logger_interface_->logWarn(msg);
+    }
+
     const auto maybe_grid_map = getTerrainMap(local_grid_response.local_grid(), clock_skew_result.value(), frame_prefix_);
     if (!maybe_grid_map) {
       logger_interface_->logError("Failed to convert terrain local grid to GridMap.");

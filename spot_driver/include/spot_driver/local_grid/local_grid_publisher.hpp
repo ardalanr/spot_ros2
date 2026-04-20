@@ -53,6 +53,7 @@ class LocalGridPublisher {
   void timerCallback();
 
   std::string frame_prefix_;
+  bool logged_snapshot_frames_{false};
 
   std::shared_ptr<LocalGridClientInterface> local_grid_client_;
   std::shared_ptr<TimeSyncApi> time_sync_api_;
