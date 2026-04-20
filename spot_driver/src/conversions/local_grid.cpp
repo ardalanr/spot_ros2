@@ -20,7 +20,7 @@ namespace {
 // The MultiArray layout labels used by grid_map_ros to identify column-major storage:
 constexpr auto kOuterDimLabel = "column_index";  // outer dim = columns (y direction)
 constexpr auto kInnerDimLabel = "row_index";     // inner dim = rows    (x direction)
-constexpr auto kOdomFrame = "odom";
+constexpr auto kTargetFrame = "vision";
 
 // Minimal SE3 math for composing frame transforms from the FrameTreeSnapshot.
 struct Vec3d {
@@ -245,6 +245,11 @@ std::optional<grid_map_msgs::msg::GridMap> getTerrainMap(const bosdyn::api::Loca
     return std::nullopt;
   }
 
+  // Bosdyn stores data[y * num_x + x] with (x=0, y=0) at the minimum-corner cell.
+  // grid_map's column-major layout places index 0 at the maximum-(x,y) corner.
+  // Reversing the flat array corrects both axes simultaneously.
+  std::reverse(heights.begin(), heights.end());
+
   grid_map_msgs::msg::GridMap grid_map;
 
   // Compute the grid center in odom frame.
@@ -256,7 +261,7 @@ std::optional<grid_map_msgs::msg::GridMap> getTerrainMap(const bosdyn::api::Loca
   // The Bosdyn snapshot for local grids uses "body" as the root, with "odom" and the corner frame
   // in different branches. computeTargetTChild handles the two-path traversal through the root.
   const auto transform_result = computeTargetTChild(local_grid.transforms_snapshot(),
-                                                    local_grid.frame_name_local_grid_data(), kOdomFrame);
+                                                    local_grid.frame_name_local_grid_data(), kTargetFrame);
   if (!transform_result) {
     return std::nullopt;
   }
@@ -279,14 +284,10 @@ std::optional<grid_map_msgs::msg::GridMap> getTerrainMap(const bosdyn::api::Loca
   grid_map.info.pose.position.x = center_in_target.x;
   grid_map.info.pose.position.y = center_in_target.y;
   grid_map.info.pose.position.z = center_in_target.z;
-  // grid_map.info.pose.orientation.w = T_target_corner.r.w;
-  // grid_map.info.pose.orientation.x = T_target_corner.r.x;
-  // grid_map.info.pose.orientation.y = T_target_corner.r.y;
-  // grid_map.info.pose.orientation.z = T_target_corner.r.z;
-  grid_map.info.pose.orientation.w = 1;
-  grid_map.info.pose.orientation.x = 0;
-  grid_map.info.pose.orientation.y = 0;
-  grid_map.info.pose.orientation.z = 0;
+  grid_map.info.pose.orientation.w = T_target_corner.r.w;
+  grid_map.info.pose.orientation.x = T_target_corner.r.x;
+  grid_map.info.pose.orientation.y = T_target_corner.r.y;
+  grid_map.info.pose.orientation.z = T_target_corner.r.z;
 
   // Layer metadata.
   grid_map.layers = {"elevation"};

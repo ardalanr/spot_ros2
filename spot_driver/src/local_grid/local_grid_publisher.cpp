@@ -57,13 +57,20 @@ void LocalGridPublisher::timerCallback() {
     if (!logged_snapshot_frames_) {
       logged_snapshot_frames_ = true;
       const auto& grid = local_grid_response.local_grid();
-      std::string msg = "frame_name_local_grid_data='" + grid.frame_name_local_grid_data() + "'. Snapshot frames: [";
       const auto& edge_map = grid.transforms_snapshot().child_to_parent_edge_map();
+      logger_interface_->logWarn("frame_name_local_grid_data='" + grid.frame_name_local_grid_data() + "'");
       for (const auto& kv : edge_map) {
-        msg += "'" + kv.first + "'->'" + kv.second.parent_frame_name() + "', ";
+        const auto& edge = kv.second;
+        std::string msg = "  '" + kv.first + "' -> '" + edge.parent_frame_name() + "'";
+        if (edge.has_parent_tform_child()) {
+          const auto& p = edge.parent_tform_child().position();
+          const auto& r = edge.parent_tform_child().rotation();
+          msg += " | t=(" + std::to_string(p.x()) + ", " + std::to_string(p.y()) + ", " + std::to_string(p.z()) + ")";
+          msg += " | q=(w=" + std::to_string(r.w()) + ", x=" + std::to_string(r.x()) +
+                 ", y=" + std::to_string(r.y()) + ", z=" + std::to_string(r.z()) + ")";
+        }
+        logger_interface_->logWarn(msg);
       }
-      msg += "]";
-      logger_interface_->logWarn(msg);
     }
 
     const auto maybe_grid_map = getTerrainMap(local_grid_response.local_grid(), clock_skew_result.value(), frame_prefix_);
