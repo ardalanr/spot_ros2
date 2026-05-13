@@ -7,8 +7,8 @@
 #include <utility>
 
 namespace {
-// The string name of the Spot terrain local grid type.
 constexpr auto kTerrainGridTypeName = "terrain";
+constexpr auto kTerrainValidGridTypeName = "terrain_valid";
 }  // namespace
 
 namespace spot_ros2 {
@@ -39,48 +39,61 @@ void LocalGridPublisher::timerCallback() {
     return;
   }
 
-  const auto response = local_grid_client_->getLocalGrids({kTerrainGridTypeName});
+  const auto response = local_grid_client_->getLocalGrids({kTerrainGridTypeName, kTerrainValidGridTypeName});
   if (!response) {
     logger_interface_->logError(std::string{"Failed to get local grids: "}.append(response.error()));
     return;
   }
 
-  // Find the terrain grid in the response.
+  // Collect the terrain and terrain_valid grids from the response.
+  const bosdyn::api::LocalGrid* terrain_grid = nullptr;
+  const bosdyn::api::LocalGrid* terrain_valid_grid = nullptr;
+
   for (const auto& local_grid_response : response->local_grid_responses()) {
     if (local_grid_response.status() != bosdyn::api::LocalGridResponse_Status_STATUS_OK) {
       logger_interface_->logError("Local grid response status not OK for type: " +
                                   local_grid_response.local_grid().local_grid_type_name());
       continue;
     }
-
-    // One-time diagnostic: log frame_name_local_grid_data and all frames in the transforms_snapshot.
-    if (!logged_snapshot_frames_) {
-      logged_snapshot_frames_ = true;
-      const auto& grid = local_grid_response.local_grid();
-      const auto& edge_map = grid.transforms_snapshot().child_to_parent_edge_map();
-      logger_interface_->logWarn("frame_name_local_grid_data='" + grid.frame_name_local_grid_data() + "'");
-      for (const auto& kv : edge_map) {
-        const auto& edge = kv.second;
-        std::string msg = "  '" + kv.first + "' -> '" + edge.parent_frame_name() + "'";
-        if (edge.has_parent_tform_child()) {
-          const auto& p = edge.parent_tform_child().position();
-          const auto& r = edge.parent_tform_child().rotation();
-          msg += " | t=(" + std::to_string(p.x()) + ", " + std::to_string(p.y()) + ", " + std::to_string(p.z()) + ")";
-          msg += " | q=(w=" + std::to_string(r.w()) + ", x=" + std::to_string(r.x()) +
-                 ", y=" + std::to_string(r.y()) + ", z=" + std::to_string(r.z()) + ")";
-        }
-        logger_interface_->logWarn(msg);
-      }
+    const auto& type_name = local_grid_response.local_grid().local_grid_type_name();
+    if (type_name == kTerrainGridTypeName) {
+      terrain_grid = &local_grid_response.local_grid();
+    } else if (type_name == kTerrainValidGridTypeName) {
+      terrain_valid_grid = &local_grid_response.local_grid();
     }
-
-    const auto maybe_grid_map = getTerrainMap(local_grid_response.local_grid(), clock_skew_result.value(), frame_prefix_);
-    if (!maybe_grid_map) {
-      logger_interface_->logError("Failed to convert terrain local grid to GridMap.");
-      continue;
-    }
-
-    middleware_handle_->publishTerrainMap(maybe_grid_map.value());
   }
+
+  if (!terrain_grid) {
+    logger_interface_->logError("Terrain local grid not found in response.");
+    return;
+  }
+
+  // One-time diagnostic: log frame_name_local_grid_data and all frames in the transforms_snapshot.
+  if (!logged_snapshot_frames_) {
+    logged_snapshot_frames_ = true;
+    const auto& edge_map = terrain_grid->transforms_snapshot().child_to_parent_edge_map();
+    logger_interface_->logWarn("frame_name_local_grid_data='" + terrain_grid->frame_name_local_grid_data() + "'");
+    for (const auto& kv : edge_map) {
+      const auto& edge = kv.second;
+      std::string msg = "  '" + kv.first + "' -> '" + edge.parent_frame_name() + "'";
+      if (edge.has_parent_tform_child()) {
+        const auto& p = edge.parent_tform_child().position();
+        const auto& r = edge.parent_tform_child().rotation();
+        msg += " | t=(" + std::to_string(p.x()) + ", " + std::to_string(p.y()) + ", " + std::to_string(p.z()) + ")";
+        msg += " | q=(w=" + std::to_string(r.w()) + ", x=" + std::to_string(r.x()) +
+               ", y=" + std::to_string(r.y()) + ", z=" + std::to_string(r.z()) + ")";
+      }
+      logger_interface_->logWarn(msg);
+    }
+  }
+
+  const auto maybe_grid_map = getTerrainMap(*terrain_grid, clock_skew_result.value(), frame_prefix_, terrain_valid_grid);
+  if (!maybe_grid_map) {
+    logger_interface_->logError("Failed to convert terrain local grid to GridMap.");
+    return;
+  }
+
+  middleware_handle_->publishTerrainMap(maybe_grid_map.value());
 }
 
 }  // namespace spot_ros2

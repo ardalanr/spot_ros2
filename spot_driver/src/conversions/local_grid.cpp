@@ -168,9 +168,10 @@ bool decodeGridData(const bosdyn::api::LocalGrid& local_grid, std::vector<float>
   const auto encoding = local_grid.encoding();
   const auto cell_format = local_grid.cell_format();
 
-  // Determine byte stride per cell and whether to apply scale/offset.
+  // Determine byte stride per cell and the decode strategy.
   size_t byte_stride = 0;
   bool is_float32 = false;
+  bool is_uint8 = false;
   switch (cell_format) {
     case bosdyn::api::LocalGrid_CellFormat_CELL_FORMAT_FLOAT32:
       byte_stride = sizeof(float);
@@ -178,6 +179,10 @@ bool decodeGridData(const bosdyn::api::LocalGrid& local_grid, std::vector<float>
       break;
     case bosdyn::api::LocalGrid_CellFormat_CELL_FORMAT_INT16:
       byte_stride = sizeof(int16_t);
+      break;
+    case bosdyn::api::LocalGrid_CellFormat_CELL_FORMAT_UINT8:
+      byte_stride = sizeof(uint8_t);
+      is_uint8 = true;
       break;
     default:
       return false;  // unsupported format
@@ -194,6 +199,10 @@ bool decodeGridData(const bosdyn::api::LocalGrid& local_grid, std::vector<float>
       float v;
       std::memcpy(&v, src, sizeof(float));
       return v;
+    } else if (is_uint8) {
+      uint8_t v;
+      std::memcpy(&v, src, sizeof(uint8_t));
+      return static_cast<float>(v);
     } else {
       int16_t v;
       std::memcpy(&v, src, sizeof(int16_t));
@@ -231,7 +240,8 @@ bool decodeGridData(const bosdyn::api::LocalGrid& local_grid, std::vector<float>
 
 std::optional<grid_map_msgs::msg::GridMap> getTerrainMap(const bosdyn::api::LocalGrid& local_grid,
                                                          const google::protobuf::Duration& clock_skew,
-                                                         const std::string& frame_prefix) {
+                                                         const std::string& frame_prefix,
+                                                         const bosdyn::api::LocalGrid* terrain_valid) {
   const int num_cells_x = local_grid.extent().num_cells_x();
   const int num_cells_y = local_grid.extent().num_cells_y();
   const double cell_size = local_grid.extent().cell_size();
@@ -295,20 +305,34 @@ std::optional<grid_map_msgs::msg::GridMap> getTerrainMap(const bosdyn::api::Loca
   grid_map.outer_start_index = 0;
   grid_map.inner_start_index = 0;
 
+  auto make_layer = [&](std::vector<float> values) {
+    std_msgs::msg::Float32MultiArray layer;
+    layer.layout.dim.resize(2);
+    layer.layout.dim[0].label = kOuterDimLabel;
+    layer.layout.dim[0].size = static_cast<uint32_t>(num_cells_y);
+    layer.layout.dim[0].stride = static_cast<uint32_t>(num_cells_y * num_cells_x);
+    layer.layout.dim[1].label = kInnerDimLabel;
+    layer.layout.dim[1].size = static_cast<uint32_t>(num_cells_x);
+    layer.layout.dim[1].stride = static_cast<uint32_t>(num_cells_x);
+    layer.data = std::move(values);
+    return layer;
+  };
+
   // Data: one Float32MultiArray per layer, in grid_map column-major layout.
   // dim[0] = outer = columns (y direction), dim[1] = inner = rows (x direction).
   // Bosdyn's data[y * num_x + x] maps directly to grid_map's data[col * nRows + row].
-  std_msgs::msg::Float32MultiArray layer;
-  layer.layout.dim.resize(2);
-  layer.layout.dim[0].label = kOuterDimLabel;
-  layer.layout.dim[0].size = static_cast<uint32_t>(num_cells_y);
-  layer.layout.dim[0].stride = static_cast<uint32_t>(num_cells_y * num_cells_x);
-  layer.layout.dim[1].label = kInnerDimLabel;
-  layer.layout.dim[1].size = static_cast<uint32_t>(num_cells_x);
-  layer.layout.dim[1].stride = static_cast<uint32_t>(num_cells_x);
-  layer.data = std::move(heights);
+  grid_map.data.push_back(make_layer(std::move(heights)));
 
-  grid_map.data.push_back(std::move(layer));
+  // Add terrain_valid as a second layer if provided (uint8 mask: 1.0=known, 0.0=unknown).
+  if (terrain_valid != nullptr) {
+    std::vector<float> valid_values;
+    if (decodeGridData(*terrain_valid, valid_values) &&
+        static_cast<int>(valid_values.size()) == num_cells_x * num_cells_y) {
+      std::reverse(valid_values.begin(), valid_values.end());
+      grid_map.layers.push_back("terrain_valid");
+      grid_map.data.push_back(make_layer(std::move(valid_values)));
+    }
+  }
 
   return grid_map;
 }
